@@ -1,0 +1,12 @@
+services:
+  genomics-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: genomics-pipeline:test
+    container_name: genomics-pipeline
+    environment:
+      PIPELINE_DATA_MOUNT: /data
+    volumes:
+      - ./data:/data
+    command: ["python3", "check_functions.py"]
