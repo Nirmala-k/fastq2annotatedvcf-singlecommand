@@ -30,25 +30,21 @@ def _post(url, json_body, headers=None):
 
 @functools.lru_cache(maxsize=4096)
 def myvariant_lookup(chrom, pos, ref, alt):
+    """NOTE: only request the clinvar/dbsnp fields here, NOT dbnsfp.
+    dbNSFP's own license (dbnsfp.org/license) requires a paid annual
+    commercial license for "any use within a for-profit organization" or
+    anywhere its data is "incorporated into products or services that are
+    sold or monetized" — regardless of which individual score is pulled
+    from it. This function previously also requested "dbnsfp", which fed
+    the now-removed dbnsfp_field()-based fallbacks below; that request is
+    dropped entirely rather than just unused, so this pipeline never
+    fetches or redistributes dbNSFP-sourced data by default.
+    """
     hgvs = f"chr{chrom.replace('chr', '')}:g.{pos}{ref}>{alt}"
     data = _get("https://myvariant.info/v1/variant/" + hgvs,
-                params={"fields": "dbnsfp,clinvar,dbsnp"})
+                params={"fields": "clinvar,dbsnp"})
     time.sleep(RATE_LIMIT)
     return data
-
-
-def dbnsfp_field(chrom, pos, ref, alt, *path):
-    data = myvariant_lookup(chrom, pos, ref, alt)
-    node = (data or {}).get("dbnsfp")
-    for key in path:
-        if isinstance(node, list):
-            node = node[0] if node else None
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    if isinstance(node, list):
-        node = node[0] if node else None
-    return str(node) if node is not None else None
 
 
 def api_clinvar(chrom, pos, ref, alt):
@@ -89,17 +85,6 @@ def api_gnomad(chrom, pos, ref, alt):
     return None
 
 
-def api_civic(chrom, pos, ref, alt):
-    query = """query V($chr: String!, $start: Int!, $stop: Int!) {
-        coordinateEvidenceItems(chromosome: $chr, start: $start, stop: $stop) {
-            edges { node { significance } } } }"""
-    result = _post("https://civicdb.org/api/graphql",
-                    {"query": query, "variables": {"chr": chrom.replace("chr", ""), "start": pos, "stop": pos}})
-    time.sleep(RATE_LIMIT)
-    edges = (result or {}).get("data", {}).get("coordinateEvidenceItems", {}).get("edges", [])
-    return edges[0]["node"].get("significance") if edges else None
-
-
 def api_gwas_catalog(chrom, pos, ref, alt):
     rsid = api_dbsnp(chrom, pos, ref, alt)
     if not rsid:
@@ -131,6 +116,15 @@ def api_regulomedb(chrom, pos, ref, alt):
     return (features[0].get("assembled_from") or str(features[0].get("ranking"))) if features else None
 
 
+# NOTE: every entry here is backed by a direct-source API (NCBI myvariant.info
+# for clinvar/dbsnp, EBI GWAS Catalog, NCBI LitVar, gnomAD's own GraphQL API,
+# RegulomeDB's own API) — none of them route through dbNSFP. The previous
+# dbnsfp_field()-based entries (alphamissense, revel, sift, polyphen2,
+# provean, dann, clinpred, phylop) were removed entirely: dbNSFP's own
+# license requires a paid commercial license for any for-profit/monetized
+# use, regardless of which individual score is pulled from it, so fetching
+# these via myvariant.info's "dbnsfp" field carried the same licensing
+# exposure as bundling dbNSFP directly would have.
 ANNOTATOR_FALLBACKS = {
     "clinvar__sig": api_clinvar,
     "gwas_catalog__trait": api_gwas_catalog,
@@ -138,16 +132,6 @@ ANNOTATOR_FALLBACKS = {
     "dbsnp__rs": api_dbsnp,
     "regulomedb__score": api_regulomedb,
     "gnomad3__af": api_gnomad,
-    "alphamissense__am_class": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "alphamissense", "am_pathogenicity"),
-    "cadd__phred": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "cadd", "phred"),
-    "revel__score": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "revel", "score"),
-    "sift__prediction": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "sift", "pred"),
-    "polyphen2__prediction": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "polyphen2", "hdiv", "pred"),
-    "provean__prediction": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "provean", "pred"),
-    "dann__score": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "dann", "score"),
-    "clinpred__prediction": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "clinpred", "pred"),
-    "primateai__score": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "primateai", "pred"),
-    "conservation__phylop": lambda c, p, r, a: dbnsfp_field(c, p, r, a, "phylop", "100way_vertebrate"),
 }
 
 
@@ -179,7 +163,7 @@ def fallback_fill(sample_id: str, tsv_path: str) -> str:
                 result = None
             if result:
                 row[col] = result
-                row[f"{col}_fallback_used"] = "api_or_dbnsfp"
+                row[f"{col}_fallback_used"] = "api"
                 fill_counts[col] += 1
 
     for col in ANNOTATOR_FALLBACKS:

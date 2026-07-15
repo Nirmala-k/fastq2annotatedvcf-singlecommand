@@ -1,263 +1,138 @@
-# 🧬 FASTQ to Annotated Variants — The Complete Pipeline Guide
+# Genomics Pipeline
 
-Raw reads in → GPU-accelerated alignment & variant calling → **44-module
-OpenCRAVAT annotation** → a fully annotated TSV, plus a phased and an
-unphased VCF.
+A plain-Python (no Modal, no Flask), Dockerized genomic variant-analysis
+pipeline: FASTQ -> GPU-accelerated alignment + variant calling (NVIDIA
+Parabricks) -> OpenCRAVAT annotation -> a final annotated TSV, plus
+read-based phasing (WhatsHap) producing both an unphased and a phased VCF.
 
-Questions/issues: **nirmala@genepowerx.com**
-
----
-
-## 1. 🔬 From Raw Reads to Annotated, Phased Variants — What This Pipeline Does
-
-Given a pair of paired-end FASTQ files for one sample, the pipeline runs
-nine stages end to end and produces three final deliverables per sample:
-
-1. `<sample>.annotated.tsv` — every variant, annotated across 44
-   OpenCRAVAT modules (pathogenicity predictors, population frequency,
-   ClinVar, OMIM, HPO, ClinGen, gene constraint, splice prediction, etc.)
-2. `<sample>.unphased.vcf.gz` — the raw normalized variant calls
-3. `<sample>.phased.vcf.gz` — the same calls, read-based phased with
-   WhatsHap (haplotype-resolved, useful for compound-het analysis)
-
-### Stage-by-stage workflow
+## Pipeline stages
 
 ```
-[0]   download_references     Reference genome (GRCh38 + bwa index),
-                                dbSNP, ClinVar, gnomAD, AlphaMissense.
-                                Run ONCE, directly on the machine —
-                                NOT inside Docker (see Step 1 below).
-[0.5] install_opencravat        Installs the 44 OpenCRAVAT annotator
-                                modules. One-time per module — already-
-                                installed modules are skipped.
-[1]   adapter_trim               fastp — trims sequencing adapters.
-[2]   fq2bam                      Parabricks GPU-accelerated alignment
-                                  to GRCh38 (BWA + sorting + BQSR).
-[3]   call_variants                Parabricks GPU deepvariant — produces
-                                    the raw VCF.
-[4]   normalize                     bcftools norm — splits multiallelics,
-                                    left-aligns indels.
-[5]   annotate_multi                OpenCRAVAT — runs all 44 modules,
-                                    joins variant-level and gene-level
-                                    results, drops a few low-value/
-                                    irrelevant columns.
-[6]   merge_annotations              Carries the annotation table forward.
-[7]   fallback_fill (optional)        Fills a handful of still-missing
-                                      fields via external API/dbNSFP
-                                      lookups. Slow on WGS-scale variant
-                                      counts — skippable.
-[8]   dedupe_columns                  Collapses exact-duplicate and
-                                      semantically-overlapping columns →
-                                      the final annotated TSV.
-[9]   phase_variants                  WhatsHap phasing on the RAW/
-                                      normalized VCF + BAM (not the
-                                      annotated one) → unphased.vcf.gz
-                                      + phased.vcf.gz.
+[0/9]  download_references     — GRCh38 + bwa index (Hugging Face), dbSNP,
+                                  ClinVar, gnomAD, AlphaMissense
+[0.5/9] install_opencravat      — installs OC_ANNOTATORS modules (config.py)
+[1/9]  adapter_trim             — fastp
+[2/9]  fq2bam                   — Parabricks GPU alignment
+[3/9]  call_variants            — Parabricks GPU deepvariant
+[4/9]  normalize                — bcftools norm
+[5/9]  annotate_multi           — OpenCRAVAT only (VEP removed)
+[6/9]  merge_annotations        — carries OC's sqlite export forward
+[7/9]  fallback_fill            — API/dbNSFP fallback for missing OC fields
+[8/9]  dedupe_columns           — exact + semantic column dedup -> final TSV
+[9/9]  phase_variants           — WhatsHap phasing on the RAW/normalized
+                                  VCF + BAM -> unphased.vcf.gz + phased.vcf.gz
 ```
 
----
+`custom_annotators.py` (ClinPred/CScape/denovo-db/FunSeq2/MISTIC local
+flat-file lookups) still exists in `stages/` and works standalone, but is
+**not called** by `run_all.py` right now while the OpenCRAVAT side of the
+pipeline is being validated. Re-add the call in `run_all.py`'s `main()`
+whenever you want it back.
 
-## 2. 📥 Step 1 — Download Reference Data (Local Machine, NOT Docker)
+## What changed recently
 
-Reference data (GRCh38 + bwa index, dbSNP, ClinVar, gnomAD,
-AlphaMissense) is large (~400GB+) and only needs downloading **once per
-machine**. Do this directly on the host — no GPU or container needed for
-this step, so there's no reason to pay Docker's overhead for it.
+- **VEP removed entirely** — annotation is OpenCRAVAT-only now.
+- **Cancer-specific OC modules removed**: `civic`, `dbcid`, `target`
+  (CIViC/dbCID/TARGET are all oncology-focused — not relevant to a
+  germline pediatric cardiac pipeline).
+- **`litvar_full` removed** — slow (800s+ in practice) and prone to
+  intermittent connection failures against NCBI's API. Plain `litvar`
+  (rsid-only, ~1s) is kept.
+- **`custom_annotators` step removed from the main chain** (file still
+  present, runnable standalone).
+- **Annotation reads from OpenCRAVAT's sqlite, not its `-t text` report** —
+  the text reporter is a human-readable format (comment lines, section
+  headers), not a clean single-header TSV; parsing it as one collapsed
+  everything into 1 garbage column. `annotate_multi.py` now exports
+  straight from the `variant` table in the `.sqlite` OC always produces.
+- **New `phase_variants` stage** (adapted from a separate WhatsHap/Modal/GCS
+  script) — ported down to plain-Python, single-sample, local-file
+  operation matching the rest of this repo. Deliberately runs on the
+  **raw/normalized** VCF (pre-OpenCRAVAT), not the annotated one — phasing
+  only needs genotypes + read evidence, and this sidesteps OpenCRAVAT's
+  known header-quoting issue entirely.
 
-**Requirements on the host:** `wget`, `tabix` (install via
-`apt-get install -y wget tabix` if missing).
+## Repository files
 
-```bash
-cd ~/genomics-pipeline
-python3 download_references.py
+```
+config.py               — central paths, OC_ANNOTATORS, binary requirements
+utils.py                 — shared mkdirs/run/fetch helpers, csv field-size fix
+run_all.py                — orchestrates the chain above
+check_functions.py        — validates every stage imports + required binaries
+Dockerfile                 — Parabricks base + bwa/samtools/bcftools/fastp +
+                             isolated Python 3.11 venv for OpenCRAVAT +
+                             whatshap
+.dockerignore
+requirements.txt
+stages/
+  download_references.py
+  install_opencravat.py
+  adapter_trim.py
+  fq2bam.py
+  call_variants.py
+  normalize.py
+  annotate_multi.py
+  merge_annotations.py
+  custom_annotators.py    — present, not called from run_all.py right now
+  fallback_fill.py
+  dedupe_columns.py
+  phase_variants.py       — new
 ```
 
-This writes everything under `/data/genomics-pipeline/data/refs/` and
-`/data/genomics-pipeline/data/annotation/`. It's safe to re-run — every
-file is skipped if already present, and the whole stage short-circuits
-instantly once a `.download_references_done` marker exists.
+## Requirements
 
----
+- Docker
+- NVIDIA GPU + drivers (Parabricks stages) + NGC access for the base image
+- ~400GB+ disk for reference/annotation data (one-time)
 
-## 3. 📦 Step 2 — Get Sample FASTQ Data (Hugging Face)
-
-Sample FASTQ files for testing are hosted here:
-
-**https://huggingface.co/datasets/nirmala29/grch38-bwa-index**
-
-```bash
-mkdir -p /data/genomics-pipeline/data/fastq
-
-wget -O /data/genomics-pipeline/data/fastq/sample2_R1.fastq.gz \
-  https://huggingface.co/datasets/nirmala29/grch38-bwa-index/resolve/main/data/sample2_R1.fastq.gz
-
-wget -O /data/genomics-pipeline/data/fastq/sample2_R2.fastq.gz \
-  https://huggingface.co/datasets/nirmala29/grch38-bwa-index/resolve/main/data/sample2_R2.fastq.gz
-```
-
-For your own samples, place them anywhere under
-`/data/genomics-pipeline/data/` and use their real paths in the commands
-below.
-
----
-
-## 4. ⚙️ Step 3 — Build the Docker Image
+## Build
 
 ```bash
 docker build -t genomics-pipeline:test .
 ```
 
-Deployed via **NVIDIA Launchable**, which handles NGC access for the
-Parabricks base image automatically — no manual `docker login` or NGC API
-key setup needed. This installs bwa/samtools/bcftools/tabix, fastp,
-WhatsHap, and OpenCRAVAT (its own isolated Python 3.11 environment). Only
-needs redoing when the code or Dockerfile changes.
-
-### Sanity-check before running anything heavy
+## Check environment (no GPU/network needed)
 
 ```bash
 docker run --rm genomics-pipeline:test python3 check_functions.py
 ```
 
-Should report `ALL STAGES OK`.
-
----
-
-## 5. 🚀 Step 4 — Run the Pipeline: Sub-Commands, Then the Main Command
-
-**Everything lives under one root: `/data/genomics-pipeline/data/`.**
-Every command below mounts it with `-v /data:/data`. Always include
-`-e PYTHONUNBUFFERED=1` so progress prints live instead of one big burst
-at the end.
-
-References are already on disk from Step 1 — so `download_references`
-(stage 0) is not run again here. Everything below picks up from stage 0.5
-onward, in order.
-
-### 5.1 Sub-commands — run each stage on its own, in order
-
-Useful when testing, or resuming after a partial failure without redoing
-completed (GPU-heavy) work. Paths below use `sample2` as the example —
-substitute your own sample ID and the real paths its earlier stages wrote.
+## Run the full pipeline
 
 ```bash
-# [0.5] Install OpenCRAVAT's 44 annotator modules (one-time; skips already-installed ones)
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test install_opencravat.py
-
-# [1] Trim adapters
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test adapter_trim.py sample2 \
-  /data/genomics-pipeline/data/fastq/sample2_R1.fastq.gz \
-  /data/genomics-pipeline/data/fastq/sample2_R2.fastq.gz
-
-# [2] Align (GPU)
-docker run --rm --gpus all -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test fq2bam.py sample2 \
-  /data/genomics-pipeline/data/trim/sample2_R1.trimmed.fastq.gz \
-  /data/genomics-pipeline/data/trim/sample2_R2.trimmed.fastq.gz \
-  /data/genomics-pipeline/data/refs/GRCh38.fa \
-  /data/genomics-pipeline/data/refs/dbsnp.vcf.gz
-
-# [3] Call variants (GPU)
-docker run --rm --gpus all -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test call_variants.py sample2 \
-  /data/genomics-pipeline/data/align/sample2.bam \
-  /data/genomics-pipeline/data/refs/GRCh38.fa
-
-# [4] Normalize
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test normalize.py sample2 \
-  /data/genomics-pipeline/data/calls/sample2.vcf.gz \
-  /data/genomics-pipeline/data/refs/GRCh38.fa
-
-# [5] Annotate (OpenCRAVAT, 44 modules)
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test annotate_multi.py sample2 \
-  /data/genomics-pipeline/data/norm/sample2.norm.vcf.gz
-
-# [6] Carry annotations forward
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test merge_annotations.py sample2 \
-  /data/genomics-pipeline/data/annot/opencravat/sample2.export.tsv
-
-# [7] Fallback fill — OPTIONAL, slow (skip for faster runs)
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test fallback_fill.py sample2 \
-  /data/genomics-pipeline/data/merged/sample2.merged.tsv
-
-# [8] Dedupe columns -> final annotated TSV
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test dedupe_columns.py sample2 \
-  /data/genomics-pipeline/data/filled/sample2.filled.tsv
-  # (if you skipped step 7, point this at sample2.merged.tsv instead)
-
-# [9] Phase variants -> unphased.vcf.gz + phased.vcf.gz
-docker run --rm -v /data:/data -e PYTHONUNBUFFERED=1 --entrypoint python3 \
-  genomics-pipeline:test phase_variants.py sample2 \
-  /data/genomics-pipeline/data/norm/sample2.norm.vcf.gz \
-  /data/genomics-pipeline/data/align/sample2.bam \
-  /data/genomics-pipeline/data/refs/GRCh38.fa
+docker run --rm --gpus all -v /data:/data genomics-pipeline:test \
+  --sample-id YOUR_SAMPLE \
+  --fastq-r1 /data/path/to/R1.fastq.gz \
+  --fastq-r2 /data/path/to/R2.fastq.gz
 ```
 
-### 5.2 Main command — run everything above in one shot
+Add `--skip-download` once references + OC modules are already prepared
+(skips stage 0/0.5 entirely).
 
-Does exactly the sequence above (skipping stage 0, since references are
-already downloaded from Step 1), for a fresh sample:
+## Data layout
+
+Everything lives under `PIPELINE_DATA_MOUNT` (default
+`/data/genomics-pipeline/data`):
+
+```text
+refs/               GRCh38.fa + bwa index, dbsnp.vcf.gz
+annotation/         clinvar, gnomad (per-chrom), alphamissense
+opencravat_modules/ OC_ANNOTATORS module data
+opencravat_home/    OC's $HOME (config, not the ephemeral container one)
+trim/ align/ calls/ norm/ annot/ merged/ filled/
+final/              <sample>.annotated.tsv, <sample>.unphased.vcf.gz,
+                    <sample>.phased.vcf.gz
+phased/             intermediate whatshap working files
+```
+
+## Standalone stage usage
+
+Every stage file has a `if __name__ == "__main__":` block, so you can run
+any single stage directly without the full chain — useful for resuming
+after a partial failure without redoing GPU-heavy work:
 
 ```bash
-docker run --rm --gpus all -v /data:/data \
-  -e PYTHONUNBUFFERED=1 \
-  genomics-pipeline:test \
-  --skip-download \
-  --sample-id sample2 \
-  --fastq-r1 /data/genomics-pipeline/data/fastq/sample2_R1.fastq.gz \
-  --fastq-r2 /data/genomics-pipeline/data/fastq/sample2_R2.fastq.gz
+docker run --rm -v /data:/data --entrypoint python3 genomics-pipeline:test \
+  phase_variants.py sample1 /data/.../sample1.norm.vcf.gz \
+  /data/.../sample1.bam /data/.../GRCh38.fa
 ```
-
-Add `--skip-fallback-fill` to also skip stage 7 (see §5.1's note on why
-it's slow):
-
-```bash
-  --skip-fallback-fill
-```
-
----
-
-## 6. 📊 Your Results: Annotated Variants, Phased & Unphased VCFs
-
-Everything lands under `/data/genomics-pipeline/data/`:
-
-| Path | Contents |
-|---|---|
-| `final/<sample>.annotated.tsv` | The final annotated variant table |
-| `final/<sample>.unphased.vcf.gz` | Raw normalized calls |
-| `final/<sample>.phased.vcf.gz` | WhatsHap-phased calls |
-| `align/<sample>.bam` | Aligned reads |
-| `calls/<sample>.vcf.gz` | Raw deepvariant output (pre-normalization) |
-| `norm/<sample>.norm.vcf.gz` | Normalized calls (input to annotation + phasing) |
-| `annot/opencravat/<sample>.export.tsv` | Raw OpenCRAVAT export before dedup |
-| `trim/<sample>.fastp.html` | Adapter-trimming QC report |
-
-### 🧩 Making Sense of the Annotation Columns
-
-Columns are named `<module>__<field>`, e.g. `clinvar__sig`,
-`gnomad3__af`, `sift__prediction`, `hpo__term`. A large fraction of
-pathogenicity-predictor columns (SIFT, PolyPhen2, REVEL, CADD,
-AlphaMissense, etc.) will be empty for most rows — that's expected, not
-an error: those tools only score missense/coding variants, and most
-variants in a whole genome are intronic or intergenic.
-
----
-
-## 7. 🛠️ Quick Troubleshooting
-
-| Symptom | Likely cause / fix |
-|---|---|
-| No output printing during a run | Missing `-e PYTHONUNBUFFERED=1` — output is buffered, not lost; add the flag |
-| `File not found` errors on paths under `/data/...` | Path mismatch — everything must be under `/data/genomics-pipeline/data/`, matching the `-v /data:/data` mount |
-| Code changes don't seem to take effect | Rebuild the image: `docker build -t genomics-pipeline:test .` |
-| A stage fails partway through a long run | Re-run just that stage standalone (§5.1) using the outputs already sitting on disk from earlier stages — no need to redo alignment/variant-calling |
-| Want to check the environment before running anything heavy | `docker run --rm genomics-pipeline:test python3 check_functions.py` |
-
-For anything else, email **nirmala@genepowerx.com**.

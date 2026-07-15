@@ -1,0 +1,91 @@
+MIT License
+
+Copyright (c) 2026 Uppaluri K&H Personalized Medicine Clinic Pvt Ltd
+(GenepoweRx), Hyderabad, India
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+NOTE ON THIRD-PARTY DATA AND ANNOTATION SOURCES
+
+This MIT license covers the pipeline code in this repository only (the
+Python stage scripts, Dockerfile, and orchestration logic). It does NOT
+cover the third-party reference genomes, variant databases, and
+annotation modules that this pipeline downloads and runs at build/run
+time (e.g. via OpenCRAVAT). Each of those sources carries its own license
+set independently by its provider.
+
+A FULL licensing audit was performed on every OpenCRAVAT module this
+pipeline could use. Commercial users must still independently verify
+licensing for their specific use case — this audit reflects a
+good-faith review at the time of writing, not a legal opinion.
+
+CONFIRMED RESTRICTED — excluded from config.py's OC_ANNOTATORS:
+- CADD / CADD-Exome (University of Washington) — paid commercial license
+  required. https://cadd.gs.washington.edu/download
+- OMIM (Johns Hopkins University) — paid commercial license required for
+  any for-profit entity. https://www.omim.org/help/agreement
+- SpliceAI, PrimateAI (Illumina, Inc.) — CC BY-NC 4.0, academic/
+  non-commercial only. https://github.com/Illumina/PrimateAI/blob/master/LICENSE
+- REVEL — freely available for non-commercial use only; contact the
+  author for other uses. https://sites.google.com/site/revelgenomics/
+- PolyPhen-2 — named explicitly by dbNSFP's license page as requiring
+  individual commercial licensing. https://www.dbnsfp.org/license
+- ClinPred — "freely available for all non-commercial applications...
+  contact [authors]" for commercial use. https://sites.google.com/site/clinpred/download
+- LINSIGHT — named in dbNSFP's commercial-branch exclusion list.
+- MaveDB — CC BY-NC-SA 4.0 (non-commercial).
+- PharmGKB — confirmed BROKEN in this OpenCRAVAT module version
+  (errors on every variant), unrelated to licensing.
+- CIViC, dbCID, TARGET, CScape, CScape-coding, FunSeq2, OncoKB,
+  litvar_full — removed earlier for relevance/reliability reasons.
+
+NOT CONFIRMED CLEAN — also excluded, even though no explicit
+restriction was found, because no clear OPEN license statement could be
+found after a genuine search either. Absence of evidence is treated as
+insufficient for inclusion in a commercially-distributed default image:
+BayesDel, LOFTOOL, dbscSNV, DANN-coding, ALoFT, denovo-db, ess_gene,
+Pseudogene, RegulomeDB.
+If you can find and confirm an open license for any of these, they can
+be added back to OC_ANNOTATORS with a citation.
+
+CONFIRMED CLEAN for commercial use — the only modules included by
+default (see config.py for full citations per module):
+AlphaMissense (CC BY 4.0, relicensed March 2024), gnomAD family
+(unrestricted, Broad Institute), SIFT (GPL-3.0), PROVEAN (GPL-3.0),
+MISTIC (MIT), RVIS (CC BY via PLOS Genetics), phyloP/SiPhy/LRT (UCSC
+public conservation data), Gene Ontology (CC BY 4.0), ClinVar/
+ClinVar-ACMG/GWAS Catalog (CC0), HPO (freely available, attribution
+only), ClinGen (NIH consortium, built for combined academic/commercial
+use), dbSNP/dbSNP-common/NCBI-Gene/PubMed/LitVar (NCBI — U.S.
+government works, public domain by federal law), CGD (NHGRI/NIH,
+explicit public-domain waiver), InterPro (EBI standard open-data
+policy).
+
+Additionally, this pipeline's fallback-fill stage does NOT query dbNSFP
+(directly or via any intermediary) for any score, since dbNSFP's own
+terms (dbnsfp.org/license) require a paid annual commercial license for
+"any use within a for-profit organization" or wherever its data is
+"incorporated into products or services that are sold or monetized" —
+regardless of which individual score is being requested.
+
+If you add any excluded module back in, or add any other third-party
+annotation source, you are responsible for confirming its license
+permits your intended use before deploying commercially.

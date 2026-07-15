@@ -6,9 +6,9 @@ from utils import mkdirs
 
 SEMANTIC_GROUPS = {
     "pathogenicity_call": [
-        "sift__prediction", "polyphen2__prediction", "cadd__phred",
-        "revel__score", "alphamissense__am_class", "provean__prediction",
-        "clinpred__prediction", "mistic_local",
+        "sift__prediction",
+        "alphamissense__am_class", "provean__prediction",
+        "mistic_local",
     ],
     "conservation_score": ["conservation__phylop"],
     "rsid": ["dbsnp__rs"],
